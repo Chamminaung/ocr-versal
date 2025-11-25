@@ -1,13 +1,11 @@
 import multer from "multer";
-import Tesseract from "tesseract.js";
 import fs from "fs";
 import path from "path";
+import { createWorker } from "tesseract.js-node";
 
-// Disable default body parser (we handle multipart manually)
+// Disable default body parser
 export const config = {
-  api: {
-    bodyParser: false,
-  },
+  api: { bodyParser: false },
 };
 
 // Multer memory storage
@@ -18,7 +16,6 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // Handle multipart form upload
   upload.array("images")(req, res, async (err) => {
     if (err) return res.status(500).json({ error: err.message });
 
@@ -28,15 +25,23 @@ export default async function handler(req, res) {
 
     const results = [];
 
+    // Create Tesseract worker once
+    const worker = createWorker({
+      cachePath: "/tmp",
+      logger: (m) => console.log("[Tesseract]", m),
+    });
+
     try {
+      await worker.load();
+      await worker.loadLanguage("eng+mya");
+      await worker.initialize("eng+mya");
+
       // Sequential OCR to avoid memory spikes
       for (const file of req.files) {
         const tempPath = path.join("/tmp", `${Date.now()}-${file.originalname}`);
         fs.writeFileSync(tempPath, file.buffer);
 
-        const { data } = await Tesseract.recognize(tempPath, "eng+mya", {
-          logger: (m) => console.log(`[Tesseract] ${file.originalname}`, m),
-        });
+        const { data } = await worker.recognize(tempPath);
 
         results.push({
           fileName: file.originalname,
@@ -45,6 +50,8 @@ export default async function handler(req, res) {
 
         fs.unlinkSync(tempPath);
       }
+
+      await worker.terminate();
 
       return res.status(200).json({ success: true, results });
     } catch (e) {
